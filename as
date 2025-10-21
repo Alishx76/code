@@ -132,3 +132,11 @@ if (!fs.existsSync(SCRIPT_PATH)) {
 }
 
 startListener();
+
+
+
+
+
+
+Connecting to RabbitMQ...
+Connection error Socket closed abruptly during opening handshake
