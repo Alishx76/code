@@ -1,0 +1,124 @@
+// index.js
+const express = require('express');
+const fs = require('fs');
+const { spawn } = require('child_process');
+const path = require('path');
+
+const app = express();
+app.use(express.text({ type: '*/*', limit: '50mb' })); // متن یا base64
+
+const TEMP_DIR = path.join(__dirname, 'tmp');
+if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR);
+
+app.post('/print', async (req, res) => {
+  try {
+    const body = req.body || '';
+    // اگر رشته با data:image/... شروع شد، پاک کن
+    const base64 = body.replace(/^data:image\/\w+;base64,/, '');
+    const filename = `print_${Date.now()}.png`;
+    const filePath = path.join(TEMP_DIR, filename);
+    fs.writeFileSync(filePath, Buffer.from(base64, 'base64'));
+
+    // اسم پرینتر ویندوزی رو اینجا بذار یا از query بگیر
+    const printerName = req.query.printer || 'BIXOLON SRP-350pluss';
+
+    // فراخوانی PowerShell برای چاپ
+    // مسیر فایل اسکریپت PowerShell (در همین پوشه باید باشه)
+    const psScript = path.join(__dirname, 'print-image.ps1');
+
+    // اجرای powershell - از spawn با آرگومان‌ها استفاده می‌کنیم تا escaping امن‌تر باشه
+    const args = [
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy', 'Bypass',
+      '-File', psScript,
+      '-FilePath', filePath,
+      '-PrinterName', printerName
+    ];
+
+    const ps = spawn('powershell', args, { windowsHide: true });
+
+    let stdout = '', stderr = '';
+    ps.stdout.on('data', d => stdout += d.toString());
+    ps.stderr.on('data', d => stderr += d.toString());
+
+    ps.on('close', code => {
+      // پاکسازی فایل temp بعد از چاپ (اختیاری)
+      try { fs.unlinkSync(filePath); } catch (e) {}
+      if (code === 0) {
+        return res.send({ ok: true, msg: stdout.trim() || 'Printed' });
+      } else {
+        console.error('PS error:', stderr);
+        return res.status(500).send({ ok: false, error: stderr || stdout || `Exit ${code}` });
+      }
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).send({ ok: false, error: err.message });
+  }
+});
+
+app.listen(9100, '0.0.0.0', () => console.log('Print Agent running on port 9100'));
+
+
+
+
+
+
+
+
+
+param(
+  [Parameter(Mandatory=$true)][string]$FilePath,
+  [Parameter(Mandatory=$true)][string]$PrinterName
+)
+
+# بررسی وجود فایل
+if (-not (Test-Path $FilePath)) {
+  Write-Error "File not found: $FilePath"
+  exit 2
+}
+
+# تابع چاپ با استفاده از System.Drawing و PrintDocument
+Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName System.Windows.Forms
+
+try {
+  $image = [System.Drawing.Image]::FromFile($FilePath)
+
+  $pd = New-Object System.Drawing.Printing.PrintDocument
+  $pd.PrinterSettings.PrinterName = $PrinterName
+
+  if (-not $pd.PrinterSettings.IsValid) {
+    Write-Error "Printer not valid: $PrinterName"
+    exit 3
+  }
+
+  # fit image to page
+  $pd.add_PrintPage({
+    param($sender, $ev)
+    $pageBounds = $ev.PageSettings.PrintableArea
+    $img = $image
+    # محاسبه مقیاس برای جا دادن تصویر در صفحه
+    $ratio = [Math]::Min($pageBounds.Width / $img.Width, $pageBounds.Height / $img.Height)
+    $w = [int]($img.Width * $ratio)
+    $h = [int]($img.Height * $ratio)
+    $x = [int](($pageBounds.Width - $w) / 2)
+    $y = [int](($pageBounds.Height - $h) / 2)
+    $ev.Graphics.DrawImage($img, $x, $y, $w, $h)
+    $ev.HasMorePages = $false
+  })
+
+  # پرینت کردن (همین کد صامت است، بدون نمایش دیالوگ)
+  $pd.Print()
+  $image.Dispose()
+  Write-Output "OK"
+  exit 0
+} catch {
+  Write-Error $_.Exception.Message
+  exit 1
+}
+
+
+
+
